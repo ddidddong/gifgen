@@ -88,6 +88,7 @@ button:disabled{opacity:.5;cursor:default}
 .stage{border-radius:10px;border:1px solid var(--line);min-height:320px;display:grid;place-items:center;padding:14px;overflow:hidden;
   background:repeating-conic-gradient(var(--check-a) 0 25%,var(--check-b) 0 50%) 0 0/20px 20px}
 .stage img{max-width:100%;max-height:70vh;display:block;outline:1px dashed color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:0}
+.stage canvas{max-width:100%;max-height:70vh;display:block;outline:1px dashed color-mix(in srgb,var(--accent) 60%,transparent)}
 .stage .empty{color:var(--muted);font-size:.9rem;text-align:center}
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 @media (max-width:520px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -267,7 +268,7 @@ button:disabled{opacity:.5;cursor:default}
 
     <section class="panel" aria-labelledby="h-out">
       <h2 id="h-out">결과</h2>
-      <div class="stage" id="stage"><div class="empty">GIF를 만드는 중이에요…</div></div>
+      <div class="stage" id="stage"><div class="empty">미리보기를 준비하는 중이에요…</div></div>
       <div class="stats">
         <div class="stat"><span>캔버스</span><b id="sSize">–</b></div>
         <div class="stat"><span>프레임</span><b id="sFrames">–</b></div>
@@ -277,7 +278,7 @@ button:disabled{opacity:.5;cursor:default}
       <ul class="checks" id="checks"></ul>
       <div class="actions">
         <button class="primary" id="save" type="button" disabled>GIF 저장</button>
-        <span class="note" id="saveNote">점선은 GIF 캔버스 경계예요.</span>
+        <span class="note" id="saveNote">왼쪽에서 바꾸는 대로 바로 미리보기가 바뀌어요. 점선은 GIF 캔버스 경계예요.</span>
       </div>
     </section>
   </div>
@@ -519,7 +520,7 @@ function setProgress(f, msg, err){ $('barFill').style.width = (f * 100).toFixed(
 
 async function build(){
   if (busy || !source) return;
-  busy = true; $('go').disabled = true; $('save').disabled = true;
+  busy = true; pvToken++; cancelAnimationFrame(pvAnim); $('go').disabled = true; $('save').disabled = true;
   try {
     if (!gifenc){ setProgress(0.01, 'GIF 인코더를 불러오는 중…'); gifenc = await import(GIFENC_URL); }
     const s = settings(), src = source, n = src.count(s);
@@ -663,7 +664,8 @@ const downloads = { async save({ filename, data }){
   setTimeout(() => URL.revokeObjectURL(url), 4000); return { status: 'saved' };
 } };
 $('save').addEventListener('click', async () => {
-  if (!lastBlob || !downloads) return;
+  if (!source || !downloads || busy) return;
+  if (!lastBlob){ await build(); if (!lastBlob) return; }
   try { await downloads.save({ filename: lastName, data: lastBlob }); $('saveNote').textContent = `${lastName} 파일을 내려받았어요.`; }
   catch (e){
     const code = e && e.code;
@@ -705,6 +707,73 @@ function updateNote(){
   $('ruleMin').textContent = s.minSide + 'px';
 }
 
+/* ---------- live preview (right panel) ---------- */
+let pvToken = 0, pvTimer = null, pvAnim = 0;
+function invalidate(){
+  lastBlob = null; pvToken++;
+  $('save').disabled = !(source && downloads);
+  clearTimeout(pvTimer); pvTimer = setTimeout(livePreview, 140);
+}
+async function livePreview(){
+  if (!source) return;
+  if (busy){ clearTimeout(pvTimer); pvTimer = setTimeout(livePreview, 300); return; }
+  const token = ++pvToken, s = settings(), src = source, n = src.count(s);
+  const stale = () => token !== pvToken;
+  try {
+    if (src.kind === 'video') src.video.pause();
+    const cons = conservativeBounds(src, s), cw = cons.x1 - cons.x0, ch = cons.y1 - cons.y0;
+    const a = Math.min(4, 520 / Math.max(cw, ch));
+    const cv = document.createElement('canvas'); cv.width = Math.ceil(cw * a) + 4; cv.height = Math.ceil(ch * a) + 4;
+    const ox = cons.x0 * a - 2, oy = cons.y0 * a - 2, step = Math.max(1, Math.ceil(n / 120));
+    const frames = [], box = emptyBox();
+    for (let i = 0; i < n; i += step){
+      const img = await renderFrame(src, s, i, cv, a, ox, oy);
+      if (stale()) return;
+      alphaBox(img, box); frames.push(img);
+      if (src.kind === 'video' && frames.length % 4 === 1) setProgress(i / n, `미리보기를 준비하는 중… ${i + 1}/${n}`);
+      if (frames.length % 6 === 0){ await tick(); if (stale()) return; }
+    }
+    if (src.kind === 'video') setProgress(0, '');
+    if (box.x1 < 0){ $('stage').replaceChildren(Object.assign(document.createElement('div'), { className: 'empty', textContent: '보이는 픽셀이 없어요. 배경색 지우기 범위를 줄여 보세요.' })); return; }
+    // same rule as the GIF: union box of all frames + 1px on every side
+    const X0 = box.x0 - 1, Y0 = box.y0 - 1, W = box.x1 - box.x0 + 3, H = box.y1 - box.y0 + 3;
+    const tmp = document.createElement('canvas'); tmp.width = cv.width; tmp.height = cv.height;
+    const tctx = tmp.getContext('2d'), bms = [];
+    for (const f of frames){ tctx.putImageData(f, 0, 0); bms.push(await createImageBitmap(tmp, X0, Y0, W, H)); if (stale()) return; }
+    // estimated final GIF size
+    const bw = (box.x1 - box.x0 + 1) / a, bh = (box.y1 - box.y0 + 1) / a;
+    const k = Math.max((s.minSide - 2) / Math.min(bw, bh), Math.min(1, (s.maxSide - 2) / Math.max(bw, bh)));
+    const eW = Math.max(s.minSide, Math.round(bw * k) + 2), eH = Math.max(s.minSide, Math.round(bh * k) + 2);
+    // display: keep the final aspect (min-side padding included)
+    const out = document.createElement('canvas');
+    out.width = Math.round(eW * (W / (bw * k + 2))); out.height = Math.round(eH * (H / (bh * k + 2)));
+    out.setAttribute('role', 'img'); out.setAttribute('aria-label', '움직임 미리보기');
+    const octx = out.getContext('2d');
+    const dx = Math.round((out.width - W) / 2), dy = Math.round((out.height - H) / 2);
+    $('stage').replaceChildren(out);
+    $('sSize').textContent = `약 ${eW} × ${eH}`;
+    $('sFrames').textContent = `${n}`;
+    $('sDur').textContent = n > 1 ? `${(n / s.fps).toFixed(2)}초` : '정지';
+    $('sBytes').textContent = '–';
+    $('checks').replaceChildren(...[
+      '실시간 미리보기예요. GIF 저장을 누르면 이 모습 그대로 GIF 파일을 만들어요.',
+      '모든 프레임을 합친 영역에 1px 여백을 둬서 잘리는 부분이 없어요.',
+    ].map(t => Object.assign(document.createElement('li'), { textContent: t })));
+    const t0 = performance.now(); let last = -1;
+    const loop = now => {
+      if (stale()) return;
+      const idx = bms.length > 1 ? Math.floor((now - t0) / 1000 * s.fps / step) % bms.length : 0;
+      if (idx !== last){
+        last = idx; octx.clearRect(0, 0, out.width, out.height);
+        if (s.bg !== 'transparent'){ octx.fillStyle = s.bgColor; octx.fillRect(0, 0, out.width, out.height); }
+        octx.drawImage(bms[idx], dx, dy);
+      }
+      pvAnim = requestAnimationFrame(loop);
+    };
+    cancelAnimationFrame(pvAnim); pvAnim = requestAnimationFrame(loop);
+  } catch (e){ console.error(e); }
+}
+
 /* ---------- inputs ---------- */
 async function loadFiles(list){
   const files = [...list];
@@ -718,10 +787,8 @@ async function loadFiles(list){
     else if (imgs.length > 1) src = await sequenceSource(imgs);
     else if (imgs.length === 1) src = await imageSource(imgs[0]);
     else throw new Error('이미지나 영상 파일만 넣을 수 있어요.');
-    lastBlob = null; $('save').disabled = true;
-    $('stage').replaceChildren(Object.assign(document.createElement('div'), { className: 'empty', textContent: '설정을 고른 뒤 GIF 만들기를 눌러 주세요.' }));
-    ['sSize','sFrames','sDur','sBytes'].forEach(id => $(id).textContent = '–'); $('checks').replaceChildren();
     showSource(src);
+    invalidate();
     setProgress(0, src.kind === 'image' && imgs[0].type === 'image/gif' ? '움직이는 GIF는 첫 프레임만 읽어요. 영상이나 연속 이미지로 넣어 주세요.' : '');
   } catch (e){ setProgress(0, e.message || '파일을 열지 못했어요.', true); }
 }
@@ -731,7 +798,11 @@ const drop = $('drop');
 ['dragleave','drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
 drop.addEventListener('drop', e => loadFiles(e.dataTransfer.files));
 document.querySelectorAll('input[name=bg]').forEach(r => r.addEventListener('change', () => { $('bgColorRow').hidden = settings().bg !== 'color'; }));
-['fps','motion','motion2','strength','cycles','pivot','dur','tStart','tEnd','minSide'].forEach(id => $(id).addEventListener('change', () => { if (source && source.kind !== 'video') showSource(source); else updateNote(); }));
+// Any option on the left -> live preview on the right
+const srcPanel = $('drop').closest('.panel');
+const onOption = e => { if (!e.target || e.target.id === 'file') return; updateNote(); invalidate(); };
+srcPanel.addEventListener('input', onOption);
+srcPanel.addEventListener('change', onOption);
 $('keyOn').addEventListener('change', () => { $('keyBox').hidden = !$('keyOn').checked; });
 $('strength').addEventListener('input', () => { $('strengthV').textContent = (+$('strength').value).toFixed(1); });
 $('keyTol').addEventListener('input', () => { $('keyTolV').textContent = $('keyTol').value; });
@@ -743,10 +814,11 @@ $('keyAuto').addEventListener('click', async () => {
   const pts = [[1,1],[bm.width-2,1],[1,bm.height-2],[bm.width-2,bm.height-2]].map(([px,py]) => x.getImageData(px, py, 1, 1).data);
   const avg = [0,1,2].map(j => Math.round(pts.reduce((t, p) => t + p[j], 0) / 4));
   $('keyColor').value = rgbToHex(...avg);
+  invalidate();
 });
 $('go').addEventListener('click', build);
 
-sampleSource().then(src => { showSource(src); build(); })
+sampleSource().then(src => { showSource(src); invalidate(); })
   .catch(() => setProgress(0, '예시 이미지를 불러오지 못했어요. 파일을 올려서 시작해 주세요.', true));
 </script>
 
