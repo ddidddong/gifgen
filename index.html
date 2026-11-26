@@ -129,7 +129,7 @@ button:disabled{opacity:.5;cursor:default}
         <div class="thumb" id="thumb"></div>
         <div class="src-meta">
           <span class="tag" id="srcKind">예시</span>
-          <span class="name" id="srcName">에스프레소 김</span>
+          <span class="name" id="srcName">병아리 예시</span>
           <span class="sub" id="srcSub"></span>
         </div>
       </div>
@@ -151,7 +151,7 @@ button:disabled{opacity:.5;cursor:default}
         <div class="field">
           <label for="motion">움직임 효과</label>
           <select id="motion">
-            <option value="none" selected>없음</option>
+            <option value="none">없음</option>
             <optgroup label="흔들림">
               <option value="float">둥실 (위아래로 떠다님)</option>
               <option value="orbit">둥둥 (8자로 떠다님)</option>
@@ -164,7 +164,7 @@ button:disabled{opacity:.5;cursor:default}
               <option value="pulse">콩닥 (커졌다 작아짐)</option>
               <option value="heartbeat">두근 (심장 박동)</option>
               <option value="jelly">말랑 (젤리처럼 출렁)</option>
-              <option value="bounce">통통 (튀어 오르기)</option>
+              <option value="bounce" selected>통통 (튀어 오르기)</option>
               <option value="flip">뒤집기 (좌우로 뒤집힘)</option>
             </optgroup>
             <optgroup label="회전·이동">
@@ -310,55 +310,19 @@ function rgbToHex(r,g,b){ return '#' + [r,g,b].map(v => v.toString(16).padStart(
 // A source draws frame i into ctx in its own coordinates (0..w, 0..h).
 let source = null;
 
-function sampleSource(){
-  const W = 520, H = 640, period = 2.4;
-  return {
-    kind: 'sample', name: '에스프레소 김', w: W, h: H, period,
-    count: s => Math.max(2, Math.round(period * s.fps)),
-    timeOf: (i, s) => i / s.fps,
-    draw(ctx, i, s){
-      const t = (i / s.fps) / period; // 0..1 loop phase
-      // steam: three wisps, rising, periodic in t
-      ctx.lineCap = 'round';
-      for (let k = 0; k < 3; k++){
-        const x0 = 205 + k * 55, ph = t + k / 3;
-        const pts = [];
-        for (let j = 0; j <= 40; j++){
-          const u = j / 40, y = 330 - u * 290;
-          const x = x0 + Math.sin((u * 2.2 - ph) * Math.PI * 2) * (10 + 26 * u);
-          pts.push([x, y, u]);
-        }
-        for (let j = 1; j < pts.length; j++){
-          const u = pts[j][2], fade = Math.sin(Math.PI * Math.min(1, ((u - (ph % 1) * 0.35 + 1) % 1) * 1.0));
-          const wdt = (16 - 13 * u) * (0.35 + 0.65 * Math.abs(fade));
-          if (wdt < 1.2) continue;
-          ctx.strokeStyle = '#c9cfd6'; ctx.lineWidth = wdt;
-          ctx.beginPath(); ctx.moveTo(pts[j-1][0], pts[j-1][1]); ctx.lineTo(pts[j][0], pts[j][1]); ctx.stroke();
-        }
-      }
-      // saucer
-      ctx.fillStyle = '#1f4f57'; ctx.beginPath(); ctx.ellipse(260, 560, 210, 46, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#2f6f78'; ctx.beginPath(); ctx.ellipse(260, 548, 196, 38, 0, 0, Math.PI * 2); ctx.fill();
-      // handle
-      ctx.strokeStyle = '#2f6f78'; ctx.lineWidth = 26; ctx.beginPath(); ctx.ellipse(392, 430, 52, 46, 0, -Math.PI / 2.2, Math.PI / 2.2); ctx.stroke();
-      // cup body
-      ctx.fillStyle = '#3b8590'; ctx.beginPath();
-      ctx.moveTo(110, 360); ctx.lineTo(410, 360); ctx.bezierCurveTo(405, 470, 360, 535, 260, 540); ctx.bezierCurveTo(160, 535, 115, 470, 110, 360); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.beginPath(); ctx.ellipse(170, 430, 18, 52, -0.15, 0, Math.PI * 2); ctx.fill();
-      // rim + crema
-      ctx.fillStyle = '#2f6f78'; ctx.beginPath(); ctx.ellipse(260, 360, 152, 30, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#3a2418'; ctx.beginPath(); ctx.ellipse(260, 362, 136, 23, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#b98551'; ctx.beginPath(); ctx.ellipse(260, 364, 118, 17, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#d4a46e'; ctx.beginPath(); ctx.ellipse(242, 362, 52, 7, 0, 0, Math.PI * 2); ctx.fill();
-    },
-    describe: () => '520 × 640 · 2.4초 반복 · 투명 배경',
-  };
+async function sampleSource(){
+  const res = await fetch('./sample-chick.png');
+  if (!res.ok) throw new Error('sample');
+  const src = await imageSource(await res.blob());
+  src.kind = 'sample'; src.name = '병아리 예시';
+  src.describe = () => `${src.w} × ${src.h} · 예시 이미지 · 투명 배경`;
+  return src;
 }
 
 async function imageSource(file){
   const bmp = await createImageBitmap(file);
   return {
-    kind: 'image', name: file.name, w: bmp.width, h: bmp.height,
+    kind: 'image', name: file.name || 'image', w: bmp.width, h: bmp.height,
     count: s => (s.motion === 'none' && s.motion2 === 'none') ? 1 : Math.max(2, Math.round(s.dur * s.fps)),
     timeOf: (i, s) => i / s.fps,
     draw(ctx){ ctx.drawImage(bmp, 0, 0); },
@@ -673,7 +637,7 @@ function showSource(src){
   $('srcName').textContent = src.name;
   $('srcSub').textContent = src.describe();
   $('trimField').hidden = src.kind !== 'video';
-  $('durField').hidden = src.kind !== 'image';
+  $('durField').hidden = src.kind !== 'image' && src.kind !== 'sample';
   if (src.kind === 'video'){ $('tStart').value = 0; $('tEnd').value = Math.min(src.duration, 6).toFixed(1); }
   const th = $('thumb');
   if (src.kind === 'video'){
@@ -739,8 +703,8 @@ $('keyAuto').addEventListener('click', async () => {
 });
 $('go').addEventListener('click', build);
 
-showSource(sampleSource());
-build();
+sampleSource().then(src => { showSource(src); build(); })
+  .catch(() => setProgress(0, '예시 이미지를 불러오지 못했어요. 파일을 올려서 시작해 주세요.', true));
 </script>
 
 </body>
